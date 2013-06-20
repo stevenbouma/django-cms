@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import urllib
+from cms import compat
 from cms.constants import TEMPLATE_INHERITANCE_MAGIC
 from cms.exceptions import LanguageError
 from cms.toolbar_pool import toolbar_pool
@@ -218,3 +219,188 @@ def cms_toolbar(toolbar, request, is_current_app, current_app_name):
         switcher = toolbar.add_button_list('Mode Switcher', side=toolbar.RIGHT, extra_classes=['cms_toolbar-item-cms-mode-switcher'])
         switcher.add_button(_("Content"), '?edit', active=not toolbar.build_mode, disabled=toolbar.build_mode)
         switcher.add_button(_("Structure"), '?build', active=toolbar.build_mode, disabled=not toolbar.build_mode)
+        
+        sites = Site.objects.all()
+
+        if len(sites) > 1:
+            menu_items = List("#", _("Sites"), sub_level=True)
+            menu_items.items.append(
+                Item(reverse("admin:sites_site_changelist"), _("Manage Sites"), load_side_frame=True))
+            menu_items.items.append(Break())
+            items.append(menu_items)
+            current_site = Site.objects.get_current()
+            for site in sites:
+                menu_items.items.append(
+                    Item("http://%s" % site.domain, site.name, load_modal=False,
+                         active=site.pk == current_site.pk))
+
+    def get_language_menu(self):
+        site = Site.objects.get_current()
+        try:
+            current_lang = get_language_object(get_language_from_request(self.request), site.pk)
+        except LanguageError:
+            current_lang = None
+        menu_items = List("#", _("Language"))
+        for lang in get_language_objects(site.pk):
+            if hasattr(self.request, "_language_changer"):
+                url = self.request._language_changer(lang['code'])
+            else:
+                url = DefaultLanguageChanger(self.request)(lang['code'])
+            menu_items.items.append(
+                Item(url, lang['name'], active=current_lang and lang['code'] == current_lang['code'], load_modal=False))
+        return menu_items
+
+    def get_template_menu(self):
+        menu_items = List("#", _("Template"), sub_level=True)
+        url = reverse('admin:cms_page_change_template', args=(self.page.pk,))
+        for path, name in get_cms_setting('TEMPLATES'):
+            active = False
+            if self.page.template == path:
+                active = True
+            if path == TEMPLATE_INHERITANCE_MAGIC:
+                menu_items.items.append(Break())
+            menu_items.items.append(
+                Item(url, name, ajax=True,
+                     ajax_data={'template': path, 'csrfmiddlewaretoken': unicode(csrf(self.request)['csrf_token'])},
+                     active=active)
+            )
+        return menu_items
+
+    def get_page_menu(self, page):
+        """
+        Builds the 'page menu'
+        """
+        menu_items = List(reverse("admin:cms_page_change", args=[page.pk]), _("Page"))
+        menu_items.items.append(Item("?edit", _('Edit Page'), disabled=self.toolbar.edit_mode, load_modal=False))
+        menu_items.items.append(Item(
+            reverse('admin:cms_page_change', args=[page.pk]),
+            _('Settings'),
+            load_modal=True)
+        )
+        if self.toolbar.build_mode or self.toolbar.edit_mode:
+            menu_items.items.append(self.get_template_menu())
+        menu_items.items.append(Break())
+        menu_items.items.append(Item(
+            reverse('admin:cms_page_changelist'),
+            _('Move page'),
+            load_modal=True)
+        )
+        data = {
+            'position': 'last-child',
+            'target': self.page.pk,
+        }
+        menu_items.items.append(Item(
+            '%s?%s' % (reverse('admin:cms_page_add'), urllib.urlencode(data)),
+            _('Add child page'),
+            load_modal=True)
+        )
+        data = {
+            'position': 'last-child',
+        }
+        if self.page.parent_id:
+            data['target'] = self.page.parent_id
+        menu_items.items.append(Item(
+            '%s?%s' % (reverse('admin:cms_page_add'),
+            urllib.urlencode(data)),
+            _('Add sibling page'),
+            load_modal=True)
+        )
+        menu_items.items.append(Break())
+        menu_items.items.append(Item(
+            reverse('admin:cms_page_delete', args=(self.page.pk,)),
+            _('Delete Page'),
+            load_modal=True)
+        )
+
+        return menu_items
+
+    def get_history_menu(self):
+        page = self.page
+        dirty = page.is_dirty()
+        menu_items = List('', _("History"))
+        if 'reversion' in settings.INSTALLED_APPS:
+            import reversion
+            from reversion.models import Revision
+
+            versions = reversion.get_for_object(page)
+            if page.revision_id:
+                current_revision = Revision.objects.get(pk=page.revision_id)
+                has_undo = versions.filter(revision__pk__lt=current_revision.pk).count() > 0
+                has_redo = versions.filter(revision__pk__gt=current_revision.pk).count() > 0
+            else:
+                has_redo = False
+                has_undo = versions.count() > 1
+            menu_items.items.append(Item(
+                reverse('admin:cms_page_undo', args=[page.pk]),
+                _('Undo'),
+                ajax=True,
+                ajax_data={'csrfmiddlewaretoken': unicode(csrf(self.request)['csrf_token'])},
+                disabled=not has_undo)
+            )
+
+            menu_items.items.append(Item(
+                reverse('admin:cms_page_redo', args=[page.pk]),
+                _('Redo'),
+                ajax=True,
+                ajax_data={'csrfmiddlewaretoken': unicode(csrf(self.request)['csrf_token'])},
+                disabled=not has_redo)
+            )
+            menu_items.items.append(Break())
+        menu_items.items.append(Item(
+            reverse('admin:cms_page_revert_page', args=[page.pk]),
+            _('Revert to live'), ajax=True,
+            ajax_data={'csrfmiddlewaretoken': unicode(csrf(self.request)['csrf_token'])},
+            question=_("Are you sure you want to revert to live?"),
+            disabled=not dirty)
+        )
+        menu_items.items.append(Item(
+            reverse('admin:cms_page_history', args=(self.page.pk,)),
+            _('View History'),
+            load_modal=True)
+        )
+        return menu_items
+
+    def get_publish_menu(self):
+        page = self.page
+        classes = "cms_btn-action cms_btn-publish"
+        if page.is_dirty():
+            classes += " cms_btn-publish-active"
+
+        button = Button(reverse('admin:cms_page_publish_page', args=[page.pk]), _("Publish Changes"),
+                        extra_classes=classes, ajax=True, right=True, disabled=not page.is_dirty(),
+                        active=page.is_dirty())
+        return button
+
+    def get_admin_menu(self):
+        """
+        Builds the 'admin menu' (the one with the cogwheel)
+        """
+        admin_items = List(reverse("admin:index"), _("Site"))
+        if self.can_change:
+            page_list = List(reverse("admin:cms_page_changelist"), _("Pages"), sub_level=True)
+            page_list.items.append(Item(reverse("admin:cms_page_changelist"), _('Manage pages'), load_side_frame=True))
+            page_list.items.append(Break())
+            page_list.items.append(Item(reverse("admin:cms_page_add"), _('Add new page'), load_side_frame=True))
+            admin_items.items.append(page_list)
+        if self.request.user.has_perm('user.change_user'):
+            if not compat.is_user_swapped:  # only add user menu if AUTH_USER_MODEL has not been swapped
+                admin_items.items.append(Item(reverse("admin:auth_user_changelist"), _('Users'), load_side_frame=True))
+        self.get_sites_menu(admin_items.items)
+        admin_items.items.append(Item(reverse('admin:index'), _('Administration'), load_side_frame=True))
+        admin_items.items.append(Break())
+        admin_items.items.append(
+            Item(reverse('admin:cms_usersettings_change'), _('User settings'), load_side_frame=True))
+        admin_items.items.append(Break())
+        admin_items.items.append(Item(reverse("admin:logout"), _('Logout'), ajax=True,
+                                      ajax_data={'csrfmiddlewaretoken': unicode(csrf(self.request)['csrf_token'])},
+                                      active=True))
+        return admin_items
+
+    def get_mode_switchers(self):
+        switch = ButtonList(right=True)
+        switch.addItem(_("Content"), "?edit", self.toolbar.build_mode)
+        switch.addItem(_("Structure"), "?build", not self.toolbar.build_mode)
+        return switch
+
+
+toolbar_pool.register(PageToolbar)

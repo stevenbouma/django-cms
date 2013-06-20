@@ -2,6 +2,8 @@ from __future__ import with_statement
 from cms.api import create_page, create_title
 from cms.cms_toolbar import ADMIN_MENU_IDENTIFIER
 from cms.toolbar.items import ToolbarAPIMixin, LinkItem, ItemSearchResult
+from cms.api import create_page
+from cms.compat import User, is_user_swapped
 from cms.toolbar.toolbar import CMSToolbar
 from cms.middleware.toolbar import ToolbarMiddleware
 from cms.test_utils.testcases import SettingsOverrideTestCase
@@ -9,6 +11,7 @@ from cms.test_utils.util.context_managers import SettingsOverride
 
 from django.contrib.auth.models import AnonymousUser, User, Permission
 from django.test import TestCase
+from django.contrib.auth.models import AnonymousUser, Permission
 from django.test.client import RequestFactory
 from django.utils.functional import lazy
 
@@ -98,8 +101,13 @@ class ToolbarTests(ToolbarTestBase):
         items = toolbar.get_left_items() + toolbar.get_right_items()
         # Logo + edit-mode + admin-menu + logout
         self.assertEqual(len(items), 2)
+
         admin_items = toolbar.get_or_create_menu(ADMIN_MENU_IDENTIFIER, 'Test').get_items()
-        self.assertEqual(len(admin_items), 7, admin_items)
+
+        if is_user_swapped:
+            self.assertEqual(len(items[0].get_context()['items']), 6)
+        else:
+            self.assertEqual(len(items[0].get_context()['items']), 7)
 
     def test_anon(self):
         page = create_page('test', 'nav_playground.html', 'en')
